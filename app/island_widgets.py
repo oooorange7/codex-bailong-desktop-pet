@@ -103,7 +103,7 @@ class QuotaSatellite(QToolButton):
         self._label=self.value_text()
         number=self._label.removesuffix('%');suffix='%' if self._label.endswith('%') else ''
         small=ui_font(9,True);small.setBold(True)
-        for size in (14,13,12,11,10):
+        for size in (14,13,12,11,10,9):
             main=ui_font(size,True);main.setBold(True);main.setStretch(90)
             metrics=QFontMetricsF(main);bounds=metrics.tightBoundingRect(number)
             suffix_x=metrics.horizontalAdvance(number)+.6

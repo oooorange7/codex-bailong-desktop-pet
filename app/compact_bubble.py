@@ -414,7 +414,7 @@ class CompactBubble(Bubble):
         self.windows=[];self.status='已启动，正在连接 Codex…';self.heading='白龙 · Codex 桌面伙伴'
         self.quota_caption='额度加载中…';self.reset_snapshot=None;self.reset_feed_error=False
         self.show_quota=True;self.enabled=True;self.expanded=False
-        self.bubble_mode='auto';self.auto_compact=False;self.last_task_update=time.monotonic();self.codex_open=None
+        self.bubble_mode='auto';self.auto_compact=False;self._outside_compact=False;self.last_task_update=time.monotonic();self.codex_open=None
         self._manual_grace_until=0.;self._pending_mode=None;self._pending_navigation=None
         self.quota_busy=False;self.reset_busy=False;self.pinned=True;self.wandering=True;self.movement_locked=False
         self.quota_refresh_button=None;self.reset_refresh_buttons=[];self.token_refresh_buttons=[];self.token_busy=False
@@ -423,7 +423,7 @@ class CompactBubble(Bubble):
         self.refresh_button.setObjectName('bubble_refresh_all');self.refresh_button.clicked.connect(self.request_refresh_all)
         self.refresh_button.hide()
         self.token_snapshot=None;self.dashboard_page='tokens';self.deck=None;self.today_tokens_card=None;self._active_reset_key=None;self._ring_values={}
-        self.token_range='all';self.detail_tab='quota';self.details_tabs=None;self.detail_scroll={}
+        self.token_range='7d';self.token_selection=None;self.detail_tab='quota';self.details_tabs=None;self.detail_scroll={}
         self._chart_entry=False;self._plot_resume=None
         from conversation_roster import ConversationRoster
         self.roster=ConversationRoster();self._roster_pending=False
@@ -445,6 +445,8 @@ class CompactBubble(Bubble):
         self.status_view.heightChanged.connect(self._status_height_changed)
         self.status_view.animation.finished.connect(self._status_height_finished)
         self.setWindowTitle('白龙增强版 · 状态气泡');self.redraw()
+        from outside_click import OutsideClickWatcher
+        self.outside_click=OutsideClickWatcher(self)
     def clear(self):
         # Headers are rebuilt; the tiny task animation must keep its clock.
         self._plot_resume=None;self.deck=None
@@ -558,14 +560,16 @@ class CompactBubble(Bubble):
                 if self.deck and self.dashboard_page=='tokens':
                     button=self.deck.content.range_buttons.get(period)
                     if button:button.setChecked(True)
+                    self.deck.content.plot.clear_selection()
                 self._sync_today_selection()
                 return
-            self.token_range=period
+            self.token_range=period;self.token_selection=None
             if self.deck and self.deck.isVisible():
                 self.deck.token_range=period
                 if 'tokens' in self.deck.pages:self.deck.pages['tokens'].set_period(period)
             else:self._chart_entry=True;self.redraw()
             self._sync_today_selection();self.tokenRangeChanged.emit(period)
+    def _select_token_bin(self,key):self.token_selection=key
     def show_today_tokens(self):
         self.select_dashboard('tokens');self.select_token_range('day')
     def show_quota_details(self):
@@ -710,10 +714,11 @@ class CompactBubble(Bubble):
             quota=QuotaSummary(self.windows,self.quota_caption,progress_cache=self._ring_values);quota.expand.connect(self.show_quota_details)
             quota.resetDue.connect(self._quota_reset_due);row.addWidget(quota,1)
             self.ring_kinds=['quota']*len(quota.items)+['time','tokens']
-            deck=CardDeck(self.dashboard_page,self.token_snapshot,self.reset_snapshot,self.reset_feed_error,self.reset_busy,token_busy=self.token_busy,token_range=self.token_range)
+            deck=CardDeck(self.dashboard_page,self.token_snapshot,self.reset_snapshot,self.reset_feed_error,self.reset_busy,token_busy=self.token_busy,token_range=self.token_range,token_selection=self.token_selection)
             self.deck=deck
             deck.selected.connect(self.select_dashboard)
             deck.token_range_changed.connect(self.select_token_range)
+            deck.token_selection_changed.connect(self._select_token_bin)
             row.addWidget(deck,1);daily=TodayTokens(self.token_snapshot,selected=self.dashboard_page=='tokens' and self.token_range=='day');self.today_tokens_card=daily
             daily.activated.connect(self.show_today_tokens);stack.addWidget(daily);self.add(container)
             if self.expanded:
@@ -747,7 +752,7 @@ class CompactBubble(Bubble):
     def set_mode(self,mode):
         if mode not in ('auto','mini','minimal'):raise ValueError('未知的卡片显示模式')
         if self.size_transition.running:self._pending_mode=mode;self._pending_navigation=None;return
-        self.size_transition.begin();self.bubble_mode=mode;self.auto_compact=False;self.expanded=False;self.panel_page='status';self._editor_origin=None
+        self.size_transition.begin();self.bubble_mode=mode;self.auto_compact=False;self._outside_compact=False;self.expanded=False;self.panel_page='status';self._editor_origin=None
         self.last_task_update=time.monotonic();self._manual_grace_until=self.last_task_update+15
         if self.report:self.report.dismiss()
         self._editing_flags(False);self.redraw();self.size_transition.commit();self.modeChanged.emit(mode)
@@ -756,6 +761,7 @@ class CompactBubble(Bubble):
         if mode:self.set_mode(mode);return
         if nav:
             key,value=nav
+            if key=='outside':self.collapse_from_outside();return
             callback=(lambda:self.toggle_details()) if key=='toggle' else self.return_to_status if key=='return' else (lambda:self.show_status(value)) if key=='status' else (lambda:self.show_page(key,value))
             callback()
     def keyPressEvent(self,event):
@@ -768,15 +774,25 @@ class CompactBubble(Bubble):
         super().keyPressEvent(event)
     def task_updated(self,event):
         # Only monitor task events reset inactivity; quota/token/feed polls do not.
+        # A deliberate outside-click dismissal lasts until the user opens us.
+        # New task text may wake an idle card, but must not undo that dismissal.
         self.last_task_update=time.monotonic()
         if self.codex_open is False:self.codex_open=None
         self.evaluate_mode()
     def evaluate_mode(self,now=None):
         now=time.monotonic() if now is None else now
         if self.bubble_mode!='auto' or self.panel_page!='status' or self.expanded or (self.report and self.report.requested) or self.size_transition.running:return
-        compact=now>=self._manual_grace_until and (now-self.last_task_update>=90 or self.codex_open is False)
+        compact=self._outside_compact or (now>=self._manual_grace_until and (now-self.last_task_update>=90 or self.codex_open is False))
         if compact==self.auto_compact:return
         self.size_transition.begin();self.auto_compact=compact;self.redraw();self.size_transition.commit()
+    def collapse_from_outside(self):
+        if not self.isVisible() or self.is_compact():return
+        if self.size_transition.running:
+            self._pending_navigation=('outside',None);self._pending_mode=None;return
+        if self.report:self.report.dismiss()
+        self.size_transition.begin();self._outside_compact=True;self.auto_compact=True
+        self.expanded=False;self.panel_page='status';self._editor_origin=None;self._editor_positioned=False
+        self._editing_flags(False);self.redraw();self.size_transition.commit()
     def _refresh_island_status(self):
         if self.size_transition.running or self.size_transition.preparing:
             self.size_transition.status_deferred=True;return

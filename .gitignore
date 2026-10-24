@@ -1,4 +1,6 @@
 .venv/
+.venv312/
+build312/
 __pycache__/
 *.py[cod]
 build/
@@ -15,6 +17,24 @@ auth.json
 settings.json
 task-notifications.json
 deployment-journal.json
+# Local account, chat and diagnostic data
+credentials.dpapi.json
+chat.json
+chat-sessions.json
+sessions.json
+runtime.json
+connection-paths.json
+codex-connection-check.json
+reset-watch.json
+settings.before-*.json
+deployment-backups/
+验收截图/
+# Machine-specific helpers retained locally, excluded from publication
+tools/build_local_readable.py
+tools/deploy_local_readable.py
+tools/qa_local_readable.py
+tools/qa_local_update.py
+tools/verify_live_counts.py
 app/cache/
 outputs/**
 !outputs/白龙桌宠素材/

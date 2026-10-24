@@ -1,13 +1,13 @@
-"""Bundled Latin numerals and letters, with the existing Chinese fallback."""
+"""Windows UI fonts with pixel-aligned rendering for small desktop text."""
 import os
 import sys
 from functools import lru_cache
 from pathlib import Path
 from PySide6.QtGui import QFont,QFontDatabase,QGuiApplication
 
-LATIN_FAMILY='Chakra Petch'
-FONT_FAMILIES=[LATIN_FAMILY,'Microsoft YaHei UI','Microsoft YaHei','Segoe UI','sans-serif']
-FONT_CSS='font-family:'+','.join('"'+name+'"' for name in FONT_FAMILIES)+';font-weight:600;'
+LATIN_FAMILY='Microsoft YaHei UI'
+FONT_FAMILIES=[LATIN_FAMILY,'Segoe UI','Microsoft YaHei','sans-serif']
+FONT_CSS='font-family:'+','.join('"'+name+'"' for name in FONT_FAMILIES)+';font-weight:400;'
 ROOT=Path(sys.executable).resolve().parent if getattr(sys,'frozen',False) else Path(__file__).resolve().parents[1]
 FONT_FILE=ROOT/'app/fonts/ChakraPetch-Regular.ttf'
 _font_id=None
@@ -23,7 +23,7 @@ def register_font():
         for name in ('msyh.ttc','msyhbd.ttc'):
             if (system_fonts/name).is_file():QFontDatabase.addApplicationFont(str(system_fonts/name))
         _font_id=QFontDatabase.addApplicationFont(str(FONT_FILE))
-        _font_loaded=LATIN_FAMILY in QFontDatabase.applicationFontFamilies(_font_id)
+        _font_loaded=LATIN_FAMILY in QFontDatabase.families()
     return _font_loaded
 
 
@@ -35,13 +35,15 @@ def ui_font(px,bold=False):
 @lru_cache(maxsize=128)
 def _font_template(px,bold):
     value=QFont();value.setFamilies(FONT_FAMILIES);value.setPixelSize(px)
-    value.setWeight((QFont.Weight.Bold if bold else QFont.Weight.DemiBold) if px<=11 else QFont.Weight.DemiBold if bold else QFont.Weight.Medium)
-    value.setStyleStrategy(QFont.StyleStrategy.PreferAntialias|QFont.StyleStrategy.ForceOutline)
-    value.setHintingPreference(QFont.HintingPreference.PreferFullHinting if px<=11 else QFont.HintingPreference.PreferNoHinting)
+    value.setWeight(QFont.Weight.Bold if bold else QFont.Weight.Normal)
+    # Let Windows use the font's screen-optimized outlines and snap stems to
+    # physical pixels at both integral and fractional display scale factors.
+    value.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+    value.setHintingPreference(QFont.HintingPreference.PreferFullHinting)
     return value
 
 
 def install_ui_font(app):
     register_font()
-    value=QFont();value.setFamilies(FONT_FAMILIES);value.setPointSize(10)
+    value=ui_font(13)
     app.setFont(value)

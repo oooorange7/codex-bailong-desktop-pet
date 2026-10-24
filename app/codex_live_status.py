@@ -158,6 +158,15 @@ def waiting_state(state):
         elif 'waitingOnApproval' in flags:reason='approval'
     return reason,turn.get('turnId') or ''
 
+def runtime_activity(state):
+    """Unknown/missing runtime data cannot prove that a real task stopped."""
+    turn=latest_turn(state) or {};runtime=state.get('threadRuntimeStatus') or {}
+    if runtime.get('type')=='active' and compaction_state(state)[0]:return True
+    if turn.get('status') in ('completed','failed','interrupted'):return False
+    if runtime.get('type')=='idle':return False
+    if runtime.get('type')=='active' and turn.get('status')=='inProgress':return True
+    return None
+
 class LifecycleProjection:
     def __init__(self,emit,emit_waiting=None,emit_activity=None):
         self.emit=emit;self.emit_waiting=emit_waiting;self.states={};self.revisions={};self.phases={};self.waiting={}
@@ -169,7 +178,10 @@ class LifecycleProjection:
         for sid,state in self.states.items():
             if force is not None and sid!=force:continue
             turn=latest_turn(state) or {};runtime=state.get('threadRuntimeStatus') or {}
-            value=(turn.get('turnId') or '',turn.get('status')=='inProgress' and runtime.get('type')=='active')
+            active=runtime_activity(state)
+            if active is None:
+                self.activity_sent.pop(sid,None);continue
+            value=(turn.get('turnId') or '',active)
             previous=self.activity_sent.get(sid)
             if previous and previous[:2]==value and now-previous[2]<15:continue
             self.activity_sent[sid]=(*value,now);self.emit_activity(sid,value[1],value[0])

@@ -83,6 +83,7 @@ class ActivityThread(QThread):
                     phase,sid,value,turn=self.live_events.get_nowait();target=self.targets.alias(sid)
                     if target in self.tail.reducer.sessions:
                         if phase=='activity':
+                            batch.extend(self.tail.reducer.set_live_activity(target,value,turn))
                             batch.append(dict(kind='animation_lifecycle',session=target,turn=turn,active=value));continue
                         apply=self.tail.reducer.set_waiting if phase=='waiting' else self.tail.reducer.set_compacting
                         batch.extend(apply(target,value,turn))
@@ -621,6 +622,7 @@ class EnhancedPet(Pet):
 
     def notify(self,title,text):
         self.notify_history.append({'title':title,'at':time.time()})
+        if not self.settings.get('desktop_notifications',False):return
         if sys.platform=='win32':
             # Qt's showMessage has no silent option. Never fall back to an audible alert.
             try:

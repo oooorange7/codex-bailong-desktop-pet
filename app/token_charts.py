@@ -10,13 +10,19 @@ from chart_reveal import ChartReveal,RasterChart
 from chart_curve import SmoothTrace
 
 class TokenPlot(QWidget,RasterChart):
-    def __init__(self,snapshot,period,parent=None,now=None):
+    selectionChanged=Signal(object)
+    def __init__(self,snapshot,period,parent=None,now=None,selected=None):
         super().__init__(parent);self.hits=[];self.points=[];self.reveal=ChartReveal(self)
+        self.selected_key=tuple(selected) if selected else None;self.period=period
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setMouseTracking(True);self.setMinimumWidth(0);self.set_data(snapshot,period,now)
 
     def set_data(self,snapshot,period,now=None):
+        if period!=self.period:self.selected_key=None
+        self.period=period
         self.snapshot=snapshot or {};self.now=time.time() if now is None else now
         self.series=usage_series(snapshot,period,self.now);self.invalidate_layers()
+        if self.selected_key and not self.selected_bin():self.selected_key=None
         s=self.series;bucket=s.get('bucket_days',1)
         description=f"{s['title']} · {s['total']:,} Tokens；{s['start']} 至 {s['end']}。"
         description+='每小时消耗，非累计曲线；当天00–24时，当前小时尚未结束。' if s['mode']=='line' else f'每根柱覆盖{bucket}天，悬停查看日期与用量。'
@@ -27,13 +33,40 @@ class TokenPlot(QWidget,RasterChart):
         self.setAccessibleName('Codex Token '+('小时曲线' if s['mode']=='line' else '用量柱状图'))
         self.setAccessibleDescription(description);self.setToolTip(description);self.update()
 
+    def selected_bin(self):
+        if self.series['mode']!='bars':return None
+        return next((b for b in self.series['bins'] if (b['start'],b['end'])==self.selected_key),None)
+
+    def header_text(self):
+        selected=self.selected_bin()
+        if selected:
+            label=selected['start'][5:].replace('-','/') if selected['start']==selected['end'] else selected['start'][5:]+'–'+selected['end'][5:]
+            return label+' · '+compact_tokens(selected['value'])
+        s=self.series
+        return s['title']+' · '+compact_tokens(s['total']) if s['available'] else ('暂不可用' if self.snapshot.get('unavailable') else '统计中…')
+
+    def clear_selection(self):
+        if self.selected_key is None:return
+        self.selected_key=None;self.invalidate_layers();self.update();self.selectionChanged.emit(None)
+
+    def mouseReleaseEvent(self,event):
+        if event.button()!=Qt.MouseButton.LeftButton:return super().mouseReleaseEvent(event)
+        if self.series['mode']!='bars' or not self.series['available']:return
+        key=next(((b['start'],b['end']) for rect,b in self.hits if rect.contains(event.position())),None)
+        self.selected_key=None if key==self.selected_key else key
+        self.invalidate_layers();self.update();self.selectionChanged.emit(self.selected_key)
+        event.accept()
+
     def chart_rect(self):return QRectF(2,18,max(1,self.width()-4),max(5,self.height()-31))
     def chart_mode(self):return self.series['mode']
     trace_color='#8d76ab'
     def paintEvent(self,event):self.paint_layers()
     def render_layers(self,p,dynamic):
         s=self.series;w=self.width();h=self.height();p.setFont(font(11,True));p.setPen(INK)
-        title=s['title']+' · '+compact_tokens(s['total']) if s['available'] else ('暂不可用' if self.snapshot.get('unavailable') else '统计中…')
+        title=self.header_text()
+        for size in (11,10,9):
+            p.setFont(font(size,True))
+            if QFontMetrics(p.font()).horizontalAdvance(title)<=w:break
         p.drawText(QRectF(0,0,w,15),Qt.AlignmentFlag.AlignCenter,QFontMetrics(p.font()).elidedText(title,Qt.TextElideMode.ElideRight,w))
         plot=self.chart_rect();bottom=plot.bottom();bins=s['bins'];top=max((b['value'] for b in bins if not b['future']),default=0)
         p.setPen(QPen(QColor('#d8cde3'),.8));p.drawLine(QPointF(plot.left(),bottom),QPointF(plot.right(),bottom))
@@ -44,7 +77,10 @@ class TokenPlot(QWidget,RasterChart):
             for i,b in enumerate(bins):
                 height=plot.height()*b['value']/max(1,top);x=plot.left()+i*slot
                 rect=QRectF(x,bottom-height,max(.6,slot-gap),height)
-                p.setPen(Qt.PenStyle.NoPen);p.setBrush(QColor('#8d76ab' if b['current'] else '#b19bc9'))
+                selected=(b['start'],b['end'])==self.selected_key
+                if selected:
+                    static.fillRect(QRectF(x,plot.top(),slot,plot.height()),QColor('#eee5f5'))
+                p.setPen(Qt.PenStyle.NoPen);p.setBrush(QColor('#70518e' if selected else '#8d76ab' if b['current'] else '#b19bc9'))
                 if height:p.drawRoundedRect(rect,min(1.5,rect.width()/3),min(1.5,height/3))
                 else:
                     p.setPen(QPen(QColor('#c8bbd7'),1));p.drawLine(QPointF(x,bottom),QPointF(x+rect.width(),bottom))
@@ -93,7 +129,8 @@ class TokenPlot(QWidget,RasterChart):
 
 class TokenChartCard(QWidget):
     rangeChanged=Signal(str)
-    def __init__(self,snapshot=None,parent=None,period='all',now=None):
+    selectionChanged=Signal(object)
+    def __init__(self,snapshot=None,parent=None,period='all',now=None,selected=None):
         super().__init__(parent);self.setMinimumWidth(0)
         self.period=period if period in TOKEN_RANGES else 'all';self.range_buttons={}
         layout=QVBoxLayout(self);layout.setContentsMargins(0,0,0,0);layout.setSpacing(0)
@@ -105,10 +142,12 @@ class TokenChartCard(QWidget):
             button.setFocusPolicy(Qt.FocusPolicy.NoFocus);button.setCursor(Qt.CursorShape.PointingHandCursor);button.setFixedHeight(18)
             button.setStyleSheet('QToolButton{'+FONT_CSS+'font-size:10px;font-weight:700;color:#76638c;border:0;padding:0;background:transparent;border-radius:4px;}QToolButton:checked{background:#e8def0;color:#514360;}QToolButton:hover{background:#eee7f5;}')
             button.clicked.connect(lambda checked=False,k=key:self.rangeChanged.emit(k));row.addWidget(button,1);self.range_buttons[key]=button
-        layout.addWidget(tabs);self.plot=TokenPlot(snapshot,self.period,self,now);layout.addWidget(self.plot,1)
+        layout.addWidget(tabs);self.plot=TokenPlot(snapshot,self.period,self,now,selected);layout.addWidget(self.plot,1)
+        self.plot.selectionChanged.connect(self.selectionChanged.emit)
         self.setAccessibleName(self.plot.accessibleName());self.setAccessibleDescription(self.plot.accessibleDescription())
 
     def set_period(self,period):
+        self.plot.clear_selection()
         self.period=period
         for key,button in self.range_buttons.items():button.setChecked(key==period)
         self.plot.set_data(self.plot.snapshot,period);self.plot.begin_reveal();self.plot.start_reveal()

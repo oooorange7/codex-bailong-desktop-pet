@@ -123,6 +123,22 @@ class ActivityReducer:
         s.waiting_reason=reason
         return [self._status(sid,s)]
 
+    def set_live_activity(self,sid,active,turn=''):
+        """Reconcile missing log endings from explicit desktop runtime truth.
+
+        A quiet log alone never stops a long task. Stale IPC turns cannot stop
+        a newer log turn or resurrect an already completed one.
+        """
+        s=self.sessions.get(sid)
+        if s is None or s.source_subagent:return []
+        if turn and s.turn and turn!=s.turn:return []
+        if active:return []
+        if s.done and not s.compacting and s.state not in ('thinking','working','responding','waiting'):return []
+        s.done=True;s.compacting=False;s.waiting_reason='';s.calls.clear()
+        s.state='idle';s.message='Codex 当前空闲，等待新任务';s.display='等待新任务'
+        event=self._status(sid,s);event['runtime_reconciled']=True
+        return [event]
+
     def set_compacting(self,sid,value,turn=''):
         s=self.sessions.setdefault(sid,Session())
         if s.source_subagent or bool(value)==s.compacting:return []

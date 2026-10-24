@@ -4,7 +4,7 @@ import time
 from datetime import date, datetime
 
 from reset_watch import BEIJING, epoch
-from token_calendar import compact_tokens
+from token_calendar import grouped_tokens
 
 
 def _countdown(seconds):
@@ -98,13 +98,8 @@ def today_tokens(tokens, now=None):
                 known = valid
                 count = value if valid else 0
     if known:
-        try:
-            display = compact_tokens(count)
-        except OverflowError:
-            # JSON integers have arbitrary precision; oversized counters must
-            # not crash the UI during compact formatting.
-            display = '>999T'
-        description = f'今日 Token：{count:,}\n本机 Codex 日志；输入含缓存，输出含推理。此数值不表示套餐额度。'
+        display = grouped_tokens(count)
+        description = f'今日 Token：{grouped_tokens(count)}\n本机 Codex 日志；输入含缓存，输出含推理。此数值不表示套餐额度。'
     else:
         display = '待统计'
         description = '今日 Token 尚未取得有效统计。\n统计口径：本机 Codex 日志；输入含缓存，输出含推理。'

@@ -50,9 +50,11 @@ class CardDeck(QWidget):
     selected=Signal(str)
     refresh_requested=Signal(str)
     token_range_changed=Signal(str)
-    def __init__(self,page,snapshot,reset_snapshot,error,busy,parent=None,token_busy=False,token_range="all"):
+    token_selection_changed=Signal(object)
+    def __init__(self,page,snapshot,reset_snapshot,error,busy,parent=None,token_busy=False,token_range="all",token_selection=None):
         super().__init__(parent);self.setObjectName('side_card_deck');self.setFixedHeight(DASH_HEIGHT)
         self.page=page;self.snapshot=snapshot;self.reset_snapshot=reset_snapshot;self.error=error;self.reset_busy=busy;self.token_busy=token_busy;self.token_range=token_range;self.pages={}
+        self.token_selection=token_selection
         layout=QVBoxLayout(self);layout.setContentsMargins(5,2,4,2);layout.setSpacing(0)
         tabs=DeckTabs();self.tabs=tabs;row=QHBoxLayout(tabs);row.setContentsMargins(0,0,0,0);row.setSpacing(3)
         for key,text in [('tokens','Token'),('reset','重置')]:
@@ -67,11 +69,15 @@ class CardDeck(QWidget):
     def set_page(self,page,animate=True):
         self.page=page
         if page not in self.pages:
-            content=Announcement(self.reset_snapshot,self.error,self.reset_busy,with_refresh=False,dense=True) if page=='reset' else TokenChartCard(self.snapshot,period=self.token_range)
-            if page=='tokens':content.rangeChanged.connect(self.token_range_changed.emit)
+            content=Announcement(self.reset_snapshot,self.error,self.reset_busy,with_refresh=False,dense=True) if page=='reset' else TokenChartCard(self.snapshot,period=self.token_range,selected=self.token_selection)
+            if page=='tokens':
+                content.rangeChanged.connect(self.token_range_changed.emit)
+                content.selectionChanged.connect(self._token_selected)
             content.setFixedHeight(78);self.pages[page]=content;self.stack.addWidget(content)
         self.content=self.pages[page];self.stack.setCurrentWidget(self.content);self.tabs.select(page,animate)
         if page=='tokens' and animate:self.content.plot.begin_reveal();self.content.plot.start_reveal()
+    def _token_selected(self,key):
+        self.token_selection=key;self.token_selection_changed.emit(key)
     def paintEvent(self,event):
         p=QPainter(self);p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(QPen(QColor('#e3d9ed'),1));p.setBrush(QColor('#f1ebf7'));p.drawRoundedRect(QRectF(self.rect()).adjusted(3,.5,-.5,-.5),10,10)

@@ -421,7 +421,7 @@ class DesktopPet(EnhancedPet):
         if event.get('kind')=='complete' and not self.bubble.status_indicator.notify_complete(event):return
         if event.get('kind') in ('status','complete'):
             self.bubble.roster.observe(event)
-        if event.get('kind') in ('status','complete'):self.bubble.task_updated(event)
+        if event.get('kind') in ('status','complete') and not event.get('runtime_reconciled'):self.bubble.task_updated(event)
         elif event.get('kind')=='codex_presence':
             self.reactions.present=event.get('open')
             self.bubble.codex_open=event.get('open');self.bubble.evaluate_mode();return
@@ -887,6 +887,14 @@ class DesktopPet(EnhancedPet):
         value['video_firefox_backend']='ia2_video_tag'
         value['video_completion_override']=bool(self.video_yield and self.video_yield.attention_override)
         value['connection_health']=self.connection_health.snapshot()
+        value.update(drag_physics=self.settings['drag_physics'],
+            ui_font_families=__import__('typography').FONT_FAMILIES,
+            display_pixel_ratio=self.devicePixelRatioF(),local_readable_fonts=True,
+            desktop_notifications=self.settings.get('desktop_notifications',False),
+            status_active_count=self.bubble.status_indicator.active,
+            status_waiting_count=self.bubble.status_indicator.waiting,
+            outside_click_compact=True,exact_today_tokens=True,selectable_token_days=True,
+            manual_compact_until_user_opens=True,bubble_outside_compact=self.bubble._outside_compact)
         from performance_metrics import METRICS
         if METRICS.enabled:value['performance']=METRICS.snapshot()
         if self.activity:

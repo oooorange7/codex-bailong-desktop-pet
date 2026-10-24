@@ -91,7 +91,7 @@ class TodayTokenSummaryTests(unittest.TestCase):
     def test_known_count_has_exact_amount_and_local_scope(self):
         row = today_tokens(self.snapshot, self.now)
         self.assertTrue(row['known'])
-        self.assertEqual(row['display'], '120.0K')
+        self.assertEqual(row['display'], '120,000')
         self.assertIn('120,000', row['description'])
         self.assertIn('本机 Codex 日志', row['description'])
         self.assertIn('输入含缓存', row['description'])
@@ -101,8 +101,9 @@ class TodayTokenSummaryTests(unittest.TestCase):
         self.snapshot['days']['2026-10-19'] = 10**400
         row = today_tokens(self.snapshot, self.now)
         self.assertTrue(row['known'])
-        self.assertEqual(row['display'], '>999T')
-        self.assertIn(f'{10**400:,}', row['description'])
+        exact=f'{10**400:,}'
+        self.assertEqual(row['display'], exact)
+        self.assertIn(exact, row['description'])
 
     def test_missing_today_is_legitimate_zero_but_bad_today_is_unknown(self):
         row = today_tokens(dict(month='2026-10', days={}), self.now)
@@ -115,12 +116,12 @@ class TodayTokenSummaryTests(unittest.TestCase):
         self.snapshot['days'].update({'2026-10-20': 99_000_000, '2026-10-32': 99_000_000,
                                      '2026-09-19': 99_000_000, '2026-10-18': 'bad',
                                      '20261019': 99_000_000, 19: 99_000_000})
-        self.assertEqual(today_tokens(self.snapshot, self.now)['display'], '120.0K')
+        self.assertEqual(today_tokens(self.snapshot, self.now)['display'], '120,000')
 
     def test_month_change_and_calendar_day_rollover_never_reuse_yesterday(self):
         now = datetime(2026, 10, 31, 23, 59).timestamp()
         snapshot = dict(month='2026-10', days={'2026-10-31': 1000})
-        self.assertEqual(today_tokens(snapshot, now)['display'], '1.0K')
+        self.assertEqual(today_tokens(snapshot, now)['display'], '1,000')
         after = now + 120
         self.assertFalse(today_tokens(snapshot, after)['known'])
         self.assertEqual(today_tokens(dict(month='2026-11', days={}), after)['display'], '0')

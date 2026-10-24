@@ -20,6 +20,11 @@ def compact_tokens(value):
     if value>=1000:return f'{value/1000:.1f}K'
     return str(value)
 
+
+def grouped_tokens(value):
+    """Exact integer count, grouped by three digits with commas."""
+    return f'{value:,}'
+
 def month_bounds(now=None):
     current=datetime.fromtimestamp(time.time() if now is None else now)
     start=current.replace(day=1,hour=0,minute=0,second=0,microsecond=0)
