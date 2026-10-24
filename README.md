@@ -1,11 +1,12 @@
 # 白龙桌宠 · 个人修改版
 
-本分支提供 **0.8.4 个人修改版源码**，基于 [Wunsch2048/codex-bailong-desktop-pet](https://github.com/Wunsch2048/codex-bailong-desktop-pet) 的 **v0.7.9**。这是独立的 `personal-v0.8.4` 分支；`main` 保留 Fork 时的上游版本。
+本分支提供 **0.8.5 个人修改版源码**，基于 [Wunsch2048/codex-bailong-desktop-pet](https://github.com/Wunsch2048/codex-bailong-desktop-pet) 的 **v0.7.9**，另移植 **v0.9.3 状态图标动画**。分支名继续使用 `personal-v0.8.4`，便于沿用分享链接；`main` 保留 Fork 时的上游版本。
 
 | 修改 | 行为 |
 | --- | --- |
 | 拖动 | 默认取消松手后的惯性与反弹，常用设置中可重新开启 |
 | 字体 | 使用 Microsoft YaHei UI、Segoe UI 等 Windows 界面字体，并调整字重和像素对齐 |
+| 状态图标 | 移植 0.9.3 的三水球旋转、交错换位与交替黏连；浅深主题配色、平滑变形，静止和隐藏时停止动画刷新 |
 | 今日 Token | 显示完整数字，例如 `87,990,123` |
 | 日统计柱 | 点击某一天显示当天用量，如 `10/24 · 87.99M`；再次点击或选择统计范围恢复总量 |
 | 点击外部收起 | 点击卡片外部回到胶囊，并保持手动收起状态，直到主动展开 |

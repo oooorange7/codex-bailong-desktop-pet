@@ -894,7 +894,9 @@ class DesktopPet(EnhancedPet):
             status_active_count=self.bubble.status_indicator.active,
             status_waiting_count=self.bubble.status_indicator.waiting,
             outside_click_compact=True,exact_today_tokens=True,selectable_token_days=True,
-            manual_compact_until_user_opens=True,bubble_outside_compact=self.bubble._outside_compact)
+            manual_compact_until_user_opens=True,bubble_outside_compact=self.bubble._outside_compact,
+            liquid_status_glyph=True,status_glyph_source_version='0.9.3',status_glyph_theme_palettes=True)
+        value['busy_icon_style']='ordered_liquid_balls'
         from performance_metrics import METRICS
         if METRICS.enabled:value['performance']=METRICS.snapshot()
         if self.activity:
