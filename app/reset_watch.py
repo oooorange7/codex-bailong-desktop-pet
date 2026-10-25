@@ -5,6 +5,8 @@ import math
 import re
 import time
 import urllib.request
+import urllib.error
+import ssl
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from enhanced_core import clean_text
@@ -80,11 +82,24 @@ def schedule_text(snapshot,now=None):
     if stamp<=now:return f'{title}预计 {local_time(stamp)} · 已过，待确认'
     return f'{title}预计最晚 {local_time(stamp)}（北京时间）'
 
-def fetch_feed():
+def reset_failure(error,phase='fetch'):
+    reason=getattr(error,'reason',error)
+    if phase=='cache':code='cache_write';message='缓存保存失败'
+    elif isinstance(error,FileNotFoundError):code='runtime_file';message='联网组件缺失'
+    elif isinstance(reason,ssl.SSLCertVerificationError):code='certificate';message='证书校验失败'
+    elif isinstance(error,urllib.error.HTTPError):code='http_'+str(error.code);message='公告服务异常'
+    elif isinstance(reason,TimeoutError):code='timeout';message='公告连接超时'
+    elif isinstance(error,(ValueError,UnicodeError)):code='schema';message='公告格式已变化'
+    else:code='network';message='公告连接失败'
+    return dict(code=code,message=message,phase=phase,checked=time.time(),errorType=type(error).__name__)
+
+def fetch_feed(opener=None):
     request=urllib.request.Request(API_URL,headers={
         'User-Agent':'BailongDesktopPet/0.3.3-local (+https://codex-resets.com)',
         'Accept':'application/json', 'Cache-Control':'no-cache'})
-    with urllib.request.urlopen(request,timeout=10) as response:
+    # A persistent global opener can retain an obsolete Windows proxy setup.
+    opener=opener or urllib.request.build_opener().open
+    with opener(request,timeout=10) as response:
         raw=response.read(2*1024*1024+1)
         if len(raw)>2*1024*1024:raise ValueError('重置消息响应过大')
         return normalize_feed(json.loads(raw.decode('utf-8')))

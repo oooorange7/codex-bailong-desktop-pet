@@ -352,19 +352,24 @@ class Announcement(QWidget):
         item=pending_reset(snapshot);stamp=epoch((item or {}).get('scheduled'))
         title='备用重置' if (item or {}).get('reset_type')=='banked' else '额外重置'
         title_row=QHBoxLayout();title_row.setContentsMargins(0,0,0,0);title_row.setSpacing(2)
-        label=QLabel(title+(' · !' if error else ''));label.setStyleSheet(FONT_CSS+'font-size:11px;color:#706879;');title_row.addWidget(label,1)
+        label=QLabel(title+(' · 旧记录' if error and snapshot else ' · 失败' if error else ''));label.setStyleSheet(FONT_CSS+'font-size:11px;color:#706879;');title_row.addWidget(label,1)
         self.refresh_button=None
         if with_refresh:
             self.refresh_button=action_button('refresh','刷新重置公告',parent=self);self.refresh_button.setObjectName('reset_refresh')
             self.refresh_button.setEnabled(not busy);self.refresh_button.clicked.connect(lambda:self.refresh_requested.emit())
             title_row.addWidget(self.refresh_button)
         layout.addLayout(title_row)
-        if snapshot is None:main='查询中…';note='正在连接公告'
+        if snapshot is None:main='暂无可用数据' if error else '查询中…';note='正在连接公告'
         elif not item:main='暂无待落实安排';note='有新消息会提醒'
         elif stamp is None:main='时间待定';note='已有重置安排'
         else:main=local_time(stamp);note='已过 · 待确认' if stamp<=time.time() else '预计最晚 · 北京时间'
+        if error:note=error.get('message','更新失败') if isinstance(error,dict) else '更新失败 · 保留缓存'
         label=QLabel(main);label.setStyleSheet(FONT_CSS+'font-size:12px;color:#514360;');layout.addWidget(label)
         label=QLabel(note);label.setStyleSheet(FONT_CSS+'font-size:11px;color:#706879;');layout.addWidget(label)
+        if dense and error:
+            checked=epoch((snapshot or {}).get('checked'))
+            last=QLabel('上次 '+local_time(checked) if checked else '尚无成功更新')
+            last.setStyleSheet(FONT_CSS+'font-size:9px;color:#706879;');layout.addWidget(last)
         if item and item.get('text') and not dense:
             summary=Summary(item['text'],99);summary.setCursor(Qt.CursorShape.ArrowCursor);layout.addWidget(summary)
         source=source_button(self);layout.addWidget(source,0,Qt.AlignmentFlag.AlignLeft)
@@ -412,7 +417,7 @@ class CompactBubble(Bubble):
         self.layout.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
         self.setFont(font(12));self.setStyleSheet('QLabel{'+FONT_CSS+'font-weight:500;color:#393343;font-size:12px;background:transparent;}')
         self.windows=[];self.status='已启动，正在连接 Codex…';self.heading='白龙 · Codex 桌面伙伴'
-        self.quota_caption='额度加载中…';self.reset_snapshot=None;self.reset_feed_error=False
+        self.quota_caption='额度加载中…';self.reset_snapshot=None;self.reset_feed_error=False;self.reset_feed_diagnostic=None
         self.show_quota=True;self.enabled=True;self.expanded=False
         self.bubble_mode='auto';self.auto_compact=False;self._outside_compact=False;self.last_task_update=time.monotonic();self.codex_open=None
         self._manual_grace_until=0.;self._pending_mode=None;self._pending_navigation=None
@@ -714,7 +719,8 @@ class CompactBubble(Bubble):
             quota=QuotaSummary(self.windows,self.quota_caption,progress_cache=self._ring_values);quota.expand.connect(self.show_quota_details)
             quota.resetDue.connect(self._quota_reset_due);row.addWidget(quota,1)
             self.ring_kinds=['quota']*len(quota.items)+['time','tokens']
-            deck=CardDeck(self.dashboard_page,self.token_snapshot,self.reset_snapshot,self.reset_feed_error,self.reset_busy,token_busy=self.token_busy,token_range=self.token_range,token_selection=self.token_selection)
+            reset_error=(self.reset_feed_diagnostic or True) if self.reset_feed_error else False
+            deck=CardDeck(self.dashboard_page,self.token_snapshot,self.reset_snapshot,reset_error,self.reset_busy,token_busy=self.token_busy,token_range=self.token_range,token_selection=self.token_selection)
             self.deck=deck
             deck.selected.connect(self.select_dashboard)
             deck.token_range_changed.connect(self.select_token_range)

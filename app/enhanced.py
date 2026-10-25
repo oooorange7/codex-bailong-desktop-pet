@@ -17,7 +17,7 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
 from pet import Pet, Bubble, ROOT, QuotaWorker
 from enhanced_core import RolloutTail, motion_step, clean_text, windows_from_limits
-from reset_watch import ResetTracker, fetch_feed, schedule_text, account_reset_text, SOURCE_URL, local_time
+from reset_watch import ResetTracker, fetch_feed, schedule_text, account_reset_text, SOURCE_URL, local_time,reset_failure
 from token_calendar import TokenUsageIndex
 from refresh_flow import RefreshCoordinator, RefreshRuns
 
@@ -165,6 +165,7 @@ class ActivityThread(QThread):
 class ResetThread(QThread):
     ready=Signal(object,object,bool)
     failed=Signal()
+    diagnostic=Signal(object)
     busy=Signal(bool)
     completed=Signal(int,bool)
     def __init__(self,parent=None):
@@ -185,11 +186,14 @@ class ResetThread(QThread):
             self.wake.clear()
             self.busy.emit(True)
             success=False
+            phase='fetch'
             try:
-                snapshot,alerts=self.tracker.update(fetch_feed())
+                feed=fetch_feed();phase='cache'
+                snapshot,alerts=self.tracker.update(feed)
                 if not self.stop.is_set():self.ready.emit(snapshot,alerts,True);success=True
-            except Exception:
-                if not self.stop.is_set():self.failed.emit()
+            except Exception as error:
+                if not self.stop.is_set():
+                    self.diagnostic.emit(reset_failure(error,phase));self.failed.emit()
             finally:
                 self.refresh_runs.complete(run)
                 if not self.stop.is_set():self.completed.emit(run,success)
@@ -288,6 +292,7 @@ class EnhancedPet(Pet):
             self.reset_worker=ResetThread(self)
             self.reset_worker.ready.connect(self.on_reset_feed)
             self.reset_worker.failed.connect(self.on_reset_feed_error)
+            self.reset_worker.diagnostic.connect(self.on_reset_diagnostic)
             self.reset_worker.busy.connect(self._reset_busy_changed)
             self.reset_worker.completed.connect(self._reset_refresh_finished)
             self.reset_worker.start()
@@ -555,7 +560,7 @@ class EnhancedPet(Pet):
 
     def on_reset_feed(self,snapshot,alerts,fresh):
         self.bubble.reset_snapshot=snapshot
-        if fresh:self.bubble.reset_feed_error=False
+        if fresh:self.bubble.reset_feed_error=False;self.bubble.reset_feed_diagnostic=None
         self.reset_checked=snapshot.get('checked',0)
         self.last_reset_display=schedule_text(snapshot)
         self.bubble.redraw()
@@ -571,6 +576,11 @@ class EnhancedPet(Pet):
         self.bubble.reset_feed_error=True
         self.bubble.redraw()
         self.position_bubble()
+
+    def on_reset_diagnostic(self,record):
+        self.bubble.reset_feed_diagnostic=record
+        self.bubble.reset_feed_error=True
+        self.bubble.redraw();self.position_bubble()
 
     def refresh_reset_feed(self):
         if self.reset_worker and not self.closing:
@@ -703,6 +713,7 @@ class EnhancedPet(Pet):
                'bubble_bounds':[self.bubble.x(),self.bubble.y(),self.bubble.width(),self.bubble.height()],
                'bubble_owned':self.bubble.parentWidget() is self,'automatic_sound':False,
                'reset_feed_checked':self.reset_checked,'reset_feed_error':self.bubble.reset_feed_error,
+               'reset_feed_diagnostic':getattr(self.bubble,'reset_feed_diagnostic',None),
                'scheduled_reset':(self.bubble.reset_snapshot or {}).get('scheduled'),
                'dashboard_card':self.bubble.dashboard_page,'token_month':(self.bubble.token_snapshot or {}).get('month'),
                'ring_types':['quota'] if self.bubble.is_island() else [],
@@ -735,6 +746,9 @@ class EnhancedPet(Pet):
 
 
 def main():
+    if '--reset-feed-probe' in sys.argv:
+        from reset_probe import run
+        return run(sys.argv[sys.argv.index('--reset-feed-probe')+1],STATE_DIR/'reset-watch.json')
     if '--apply-program-update' in sys.argv:
         from program_update_apply import main as apply_program
         return apply_program()

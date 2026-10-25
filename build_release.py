@@ -7,11 +7,12 @@ from desktop_core import VERSION
 from desktop_services import all_items
 from sustained_assets import seam_items
 from release_version import validate_new_version
+from build_tls import pyinstaller_tls_args
 def build(legacy_formats=False,application_only=True):
     validate_new_version(VERSION)
     from build_materials import build as build_materials,DEST
     catalog=build_materials()
-    subprocess.run([sys.executable,'-m','PyInstaller','--noconfirm','--windowed','--onedir','--name','BailongEnhanced','--distpath','release','--workpath','build','--specpath','build','--paths','app','--exclude-module','imageio_ffmpeg','app/enhanced.py'],cwd=ROOT,check=True)
+    subprocess.run([sys.executable,'-m','PyInstaller','--noconfirm','--windowed','--onedir','--name','BailongEnhanced','--distpath','release','--workpath','build','--specpath','build','--paths','app','--exclude-module','imageio_ffmpeg',*pyinstaller_tls_args(),'app/enhanced.py'],cwd=ROOT,check=True)
     release=ROOT/'release/BailongEnhanced'
     from package_trim import trim_qt
     trimmed=trim_qt(release)
