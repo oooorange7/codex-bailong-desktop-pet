@@ -61,8 +61,13 @@ def protect(value,decrypt=False):
 class SecretStore:
     def __init__(self,path):self.path=Path(path)
     def read(self):
-        try:return json.loads(self.path.read_text(encoding='utf-8'))
-        except (OSError,ValueError):return {}
+        try:
+            data=json.loads(self.path.read_text(encoding='utf-8'))
+            if not isinstance(data,dict):raise ValueError('invalid credentials')
+            return data
+        except FileNotFoundError:return {}
+        except (OSError,ValueError,RecursionError) as error:
+            raise OSError('本地加密凭据暂时无法读取，原文件已保留。') from error
     def get(self,name):
         value=self.read().get(name)
         try:return protect(value,True) if value else ''

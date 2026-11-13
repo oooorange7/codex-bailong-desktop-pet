@@ -26,9 +26,8 @@ STATE_DIR.mkdir(parents=True,exist_ok=True)
 CONFIG=STATE_DIR/'settings.json'
 
 def save_json(path,value):
-    temp=path.with_suffix('.tmp')
-    temp.write_text(json.dumps(value,ensure_ascii=False,indent=2),encoding='utf-8')
-    os.replace(temp,path)
+    from desktop_core import atomic_json
+    atomic_json(path,value)
 
 class ActivityThread(QThread):
     event=Signal(object)
@@ -50,7 +49,8 @@ class ActivityThread(QThread):
         self.live_reader=LiveStatusReader(self.stop,
             lambda sid,on,turn:self.live_events.put(('compacting',sid,on,turn)),
             lambda sid,reason,turn:self.live_events.put(('waiting',sid,reason,turn)),
-            lambda sid,on,turn:self.live_events.put(('activity',sid,on,turn)))
+            lambda sid,on,turn:self.live_events.put(('activity',sid,on,turn)),
+            lambda sid,status,turn:self.live_events.put(('terminal',sid,status,turn)))
         self.live_reader.start()
         while not self.stop.is_set():
             if time.monotonic()-self.last_presence_scan>=5:
@@ -58,18 +58,19 @@ class ActivityThread(QThread):
                 if self.presence_reader is None or not self.presence_reader.is_alive():
                     self.presence_reader=threading.Thread(target=self.read_presence,name='BailongCodexPresence',daemon=True);self.presence_reader.start()
             try:
-                from session_read_state import session_id,active_conversations,conversation_names
+                from session_read_state import session_id,active_conversations,conversation_names,terminal_conversations
                 from enhanced_core import Session
                 try:pending=json.loads((STATE_DIR/'task-notifications.json').read_text(encoding='utf-8')).get('unread',[])
                 except (OSError,ValueError,AttributeError):pending=[]
                 pending=[k for k in pending if isinstance(k,list) and len(k)==2 and all(isinstance(v,str) for v in k)]
                 seeds=[]
-                if time.monotonic()-self.last_active_scan>=15:
+                history_due=time.monotonic()-self.last_active_scan>=15
+                if history_due:
                     self.last_active_scan=time.monotonic();seeds=active_conversations(self.tail.home)
                     existing={session_id(s) for s in self.tail.reducer.sessions}
                     for e in seeds:
                         if session_id(e['session']) not in existing:
-                            self.tail.reducer.sessions[e['session']]=Session(title=e['title'],state='working',turn=e['turn'],done=False,updated=time.monotonic())
+                            self.tail.reducer.sessions[e['session']]=Session(title=e['title'],state='working',turn=e['turn'],done=False,historical_only=True,updated=time.monotonic())
                 with self.context_lock:displayed=self.displayed;visited=self.visited
                 self.targets.sync(self.tail.reducer.sessions,pending,displayed,visited)
                 self.tail.set_pins(self.targets.pinned());batch=self.tail.poll()
@@ -78,13 +79,23 @@ class ActivityThread(QThread):
                     states={session_id(sid):v for sid,v in self.tail.reducer.sessions.items()}
                     batch.extend(e for e in seeds if not states.get(session_id(e['session']),Session()).done)
                 self.targets.sync(self.tail.reducer.sessions,pending,displayed,visited)
+                if history_due:
+                    unfinished={session_id(sid):s.turn for sid,s in self.tail.reducer.sessions.items() if not s.done and not s.source_hidden and s.turn}
+                    ids=self.targets.choose('terminal',128,unfinished)
+                    for sid,turn,status in terminal_conversations(self.tail.home,[(sid,unfinished[sid]) for sid in ids]):
+                        batch.extend(self.tail.reducer.terminate(self.targets.alias(sid),status,turn))
                 self.live_reader.set_targets(self.targets.ipc_targets())
                 while not self.live_events.empty():
                     phase,sid,value,turn=self.live_events.get_nowait();target=self.targets.alias(sid)
                     if target in self.tail.reducer.sessions:
+                        if phase=='terminal':
+                            batch.extend(self.tail.reducer.terminate(target,value,turn));continue
                         if phase=='activity':
                             batch.extend(self.tail.reducer.set_live_activity(target,value,turn))
-                            batch.append(dict(kind='animation_lifecycle',session=target,turn=turn,active=value));continue
+                            state=self.tail.reducer.sessions[target]
+                            if not state.done and state.turn==turn and turn:
+                                batch.append(dict(kind='animation_lifecycle',session=target,turn=turn,active=value))
+                            continue
                         apply=self.tail.reducer.set_waiting if phase=='waiting' else self.tail.reducer.set_compacting
                         batch.extend(apply(target,value,turn))
                 if time.monotonic()-self.last_name_scan>=3:
@@ -192,7 +203,9 @@ class ResetThread(QThread):
                 snapshot,alerts=self.tracker.update(feed)
                 if not self.stop.is_set():self.ready.emit(snapshot,alerts,True);success=True
             except Exception as error:
+                from reset_watch import ResetCacheError
                 if not self.stop.is_set():
+                    if isinstance(error,ResetCacheError):self.ready.emit(error.snapshot,error.alerts,True)
                     self.diagnostic.emit(reset_failure(error,phase));self.failed.emit()
             finally:
                 self.refresh_runs.complete(run)
@@ -203,9 +216,17 @@ class ResetThread(QThread):
 from compact_bubble import CompactBubble as HeadBubble
 
 class EnhancedPet(Pet):
+    @staticmethod
+    def read_settings(path):
+        try:
+            values=json.loads(path.read_text(encoding='utf-8'))
+            if not isinstance(values,dict):raise ValueError('invalid settings')
+            return values,False
+        except FileNotFoundError:return {},False
+        except (OSError,ValueError,RecursionError):return {},True
+
     def __init__(self,monitor=True):
-        try:self.settings=json.loads(CONFIG.read_text(encoding='utf-8'))
-        except (OSError,ValueError):self.settings={}
+        self.settings,self.settings_read_failed=self.read_settings(CONFIG)
         self.enhanced_ready=False
         super().__init__()
         self.setWindowTitle('白龙桌宠增强版')
@@ -299,10 +320,13 @@ class EnhancedPet(Pet):
             QTimer.singleShot(1800,self.refresh_quota)
         self.position_bubble()
 
-    def save_settings(self):
+    def collect_settings(self):
         self.settings.update(wandering=self.wandering,random_actions=self.random_actions,
                              commentary=self.commentary,sound=self.sound,bubble=self.bubble.enabled,
                              quota_visible=self.bubble.show_quota,position=[self.x(),self.y()])
+    def save_settings(self):
+        if getattr(self,'settings_read_failed',False):return False
+        self.collect_settings()
         save_json(CONFIG,self.settings)
 
     def say(self,text,ms=4000):

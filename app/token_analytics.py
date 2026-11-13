@@ -6,6 +6,7 @@ from token_calendar import counter
 UNKNOWN='未识别模型'
 
 def migrate(db):
+    db.execute('CREATE TABLE IF NOT EXISTS token_segment_repairs (path TEXT PRIMARY KEY, offset INTEGER NOT NULL, skipping INTEGER NOT NULL DEFAULT 0)')
     if db.execute('PRAGMA user_version').fetchone()[0]>=2:return
     existing={r[1] for r in db.execute('PRAGMA table_info(usage)')}
     for name,kind in [('session','TEXT DEFAULT ""'),('model',f'TEXT DEFAULT "{UNKNOWN}"'),('input_tokens','INTEGER'),('output_tokens','INTEGER'),('known','INTEGER DEFAULT 0')]:
@@ -33,17 +34,89 @@ def message_text(content):
     if isinstance(content,list):return '\n'.join(v.get('text','') for v in content if isinstance(v,dict) and isinstance(v.get('text'),str))
     return ''
 
+def continuation(meta):
+    """Codex paginated logs can start with counters inherited from a prior segment."""
+    if not isinstance(meta,dict) or meta.get('type')!='session_meta':return False
+    payload=meta.get('payload')
+    return isinstance(payload,dict) and isinstance(payload.get('history_base'),dict) and bool(payload['history_base'].get('thread_id'))
+
+
+def initial_delta(info,total,a,b):
+    last=info.get('last_token_usage')
+    if not isinstance(last,dict):return 0,None,None,None
+    delta,di,do,cached=(counter(last.get(k)) for k in
+                         ('total_tokens','input_tokens','output_tokens','cached_input_tokens'))
+    if delta is None and di is not None and do is not None:delta=di+do
+    if delta is None or delta>total:return 0,None,None,None
+    if di is None or do is None or di+do!=delta or a is None or b is None or di>a or do>b:
+        return delta,None,None,None
+    return delta,di,do,cached if cached is not None and cached<=di else None
+
+
+def usage_fingerprint(obj,total,usage):
+    identity=json.dumps([obj.get('timestamp'),total,usage.get('input_tokens'),usage.get('output_tokens')],separators=(',',':'))
+    return hashlib.sha256(identity.encode()).hexdigest()
+
+
+def correct_segment_sample(db,obj,usage,total,delta,di,do,cached):
+    if delta>=total:return
+    fingerprint=usage_fingerprint(obj,total,usage)
+    changed=db.execute('UPDATE usage SET tokens=?,input_tokens=?,output_tokens=?,known=? WHERE fingerprint=? AND tokens=?',
+                       (delta,di,do,int(di is not None),fingerprint,total))
+    if not changed.rowcount:return
+
+
+def repair_segment(db,path,key,limit,stop):
+    """Repair only the previously booked first sample; resume long prefixes."""
+    row=db.execute('SELECT offset,skipping FROM token_segment_repairs WHERE path=?',(key,)).fetchone()
+    offset,skipping=row or (0,False)
+    if offset<0:return
+    with path.open('rb') as stream:
+        stream.seek(offset)
+        budget=1024*1024
+        while offset<limit and budget>0 and not stop():
+            line=stream.readline(min(4*1024*1024,limit-offset))
+            if not line:break
+            offset=stream.tell();budget-=len(line)
+            complete=line.endswith(b'\n')
+            if skipping or not complete:
+                skipping=not complete
+                continue
+            if b'token_count' not in line or b'total_token_usage' not in line:continue
+            try:
+                obj=json.loads(line);payload=obj['payload']
+                if obj.get('type')!='event_msg' or payload.get('type')!='token_count':continue
+                info=payload.get('info') or {};usage=info.get('total_token_usage') or {}
+                total,a,b=(counter(usage.get(k)) for k in ('total_tokens','input_tokens','output_tokens'))
+                if total is None and a is not None and b is not None:total=a+b
+            except (ValueError,TypeError,KeyError,AttributeError):continue
+            if not total or stamp_of(obj) is None:continue
+            correct_segment_sample(db,obj,usage,total,*initial_delta(info,total,a,b))
+            offset=-1;break
+    db.execute('INSERT OR REPLACE INTO token_segment_repairs VALUES (?,?,?)',(key,offset,int(skipping)))
+
+
 def scan_file(index,db,path,stop):
     key=str(path.resolve());size=path.stat().st_size
     row=db.execute('SELECT offset,highwater,session,model,turn,input_water,output_water FROM files WHERE path=?',(key,)).fetchone()
     offset,previous,sid,model,turn,pi,po=row or (0,0,path.stem,UNKNOWN,'',0,0)
-    if size<offset:offset,previous,sid,model,turn,pi,po=0,0,path.stem,UNKNOWN,'',0,0;index.format_known.pop(key,None)
+    segments=index.__dict__.setdefault('continued_logs',set())
+    if size<offset:
+        offset,previous,sid,model,turn,pi,po=0,0,path.stem,UNKNOWN,'',0,0
+        index.format_known.pop(key,None);segments.discard(key)
+        db.execute('DELETE FROM token_segment_repairs WHERE path=?',(key,))
+    # The saved offset survives a restart; the in-memory format cache does not.
+    # A newly appended tail may contain only progress/completion events that
+    # the token scanner deliberately skips. Validate the header independently
+    # of whether the file grew, and retry a previous negative after it settles.
+    if not index.format_known.get(key):
+        try:
+            with path.open('rb') as header:meta=json.loads(header.readline(4*1024*1024))
+            if continuation(meta):segments.add(key)
+            index.format_known[key]=isinstance(meta,dict) and meta.get('type') in ('session_meta','event_msg','response_item','turn_context')
+        except (ValueError,UnicodeError):index.format_known[key]=False
+    if previous and key in segments:repair_segment(db,path,key,offset,stop)
     if size==offset and row:
-        if key not in index.format_known:
-            try:
-                with path.open('rb') as header:meta=json.loads(header.readline(4*1024*1024))
-                index.format_known[key]=isinstance(meta,dict) and meta.get('type') in ('session_meta','event_msg','response_item','turn_context')
-            except (ValueError,UnicodeError):index.format_known[key]=False
         return index.format_known[key]
     recognized=index.format_known.get(key,False)
     if not sid:sid=path.stem
@@ -66,7 +139,8 @@ def scan_file(index,db,path,stop):
             if not isinstance(p,dict):continue
             if kind in ('session_meta','event_msg','response_item','turn_context'):recognized=True
             if kind=='session_meta':
-                if isinstance(p.get('id'),str):sid=p['id'][:128]
+                owner=(p.get('history_base') or {}).get('thread_id') if continuation(obj) else p.get('id')
+                if isinstance(owner,str):sid=owner[:128]
                 model=model_name(p.get('model')) or model
             elif kind=='turn_context':model=model_name(p.get('model')) or model
             elif kind=='event_msg' and typ in ('task_started','turn_started'):turn=str(p.get('turn_id') or obj.get('timestamp',''))[:128]
@@ -96,14 +170,20 @@ def scan_file(index,db,path,stop):
                     total=a+b
                 model=model_name(p.get('model')) or model_name(info.get('model')) or model
             except (TypeError,AttributeError):continue
+            first_in_segment=not previous and key in segments
             delta=max(0,total-previous);previous=max(previous,total)
             di=max(0,a-pi) if a is not None else None;do=max(0,b-po) if b is not None else None
             if a is not None:pi=max(pi,a)
             if b is not None:po=max(po,b)
-            if not delta:continue
             known=di is not None and do is not None and di+do==delta
-            identity=json.dumps([obj.get('timestamp'),total,usage.get('input_tokens'),usage.get('output_tokens')],separators=(',',':'))
-            fingerprint=hashlib.sha256(identity.encode()).hexdigest()
+            if first_in_segment:
+                delta,di,do,cached=initial_delta(info,total,a,b)
+                known=di is not None
+                if total:
+                    correct_segment_sample(db,obj,usage,total,delta,di,do,cached)
+                    db.execute('INSERT OR REPLACE INTO token_segment_repairs VALUES (?,-1,0)',(key,))
+            if not delta:continue
+            fingerprint=usage_fingerprint(obj,total,usage)
             db.execute('''INSERT INTO usage (fingerprint,stamp,tokens,session,model,input_tokens,output_tokens,known) VALUES (?,?,?,?,?,?,?,?)
                 ON CONFLICT(fingerprint) DO UPDATE SET session=CASE WHEN usage.session='' THEN excluded.session ELSE usage.session END,
                 model=CASE WHEN usage.model=? THEN excluded.model ELSE usage.model END,

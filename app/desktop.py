@@ -459,6 +459,8 @@ class DesktopPet(EnhancedPet):
         finally:self._priority=0
 
     def apply_settings(self,values,save=True):
+        if save and getattr(self,'settings_read_failed',False):
+            raise OSError('设置暂时无法读取，原文件已保留；恢复读取后请重启桌宠。')
         previous=copy.deepcopy(self.settings)
         if previous.get('character_visible',True) and values.get('character_visible') is False:
             self.remember_card_anchor(self.bubble.content_geometry())
@@ -536,8 +538,8 @@ class DesktopPet(EnhancedPet):
         return result
 
     def save_settings(self):
-        if not self.enhanced_ready:return
-        super().save_settings()
+        if not self.enhanced_ready or getattr(self,'settings_read_failed',False):return False
+        self.collect_settings()
         self.settings['facing']=self.walk_direction
         screen=QApplication.screenAt(self.frameGeometry().center()) or QApplication.primaryScreen();a=screen.availableGeometry()
         self.settings['screen_position']=relative_position(self.x(),self.y(),self.width(),self.height(),(a.x(),a.y(),a.width(),a.height()),screen.name())

@@ -82,9 +82,17 @@ def schedule_text(snapshot,now=None):
     if stamp<=now:return f'{title}预计 {local_time(stamp)} · 已过，待确认'
     return f'{title}预计最晚 {local_time(stamp)}（北京时间）'
 
+class ResetFetchError(RuntimeError):
+    def __init__(self,code,message):super().__init__(message);self.code=code
+
+class ResetCacheError(OSError):
+    def __init__(self,snapshot,alerts):
+        super().__init__('最新公告已获取，但本地缓存保存失败');self.snapshot=snapshot;self.alerts=alerts
+
 def reset_failure(error,phase='fetch'):
     reason=getattr(error,'reason',error)
-    if phase=='cache':code='cache_write';message='缓存保存失败'
+    if isinstance(error,ResetCacheError) or phase=='cache':code='cache_write';message='最新公告已获取，缓存保存失败'
+    elif isinstance(error,ResetFetchError):code=error.code;message=str(error)
     elif isinstance(error,FileNotFoundError):code='runtime_file';message='联网组件缺失'
     elif isinstance(reason,ssl.SSLCertVerificationError):code='certificate';message='证书校验失败'
     elif isinstance(error,urllib.error.HTTPError):code='http_'+str(error.code);message='公告服务异常'
@@ -95,28 +103,55 @@ def reset_failure(error,phase='fetch'):
 
 def fetch_feed(opener=None):
     request=urllib.request.Request(API_URL,headers={
-        'User-Agent':'BailongDesktopPet/0.3.3-local (+https://codex-resets.com)',
+        'User-Agent':'BailongDesktopPet/'+__import__('version').VERSION+' (+https://codex-resets.com)',
         'Accept':'application/json', 'Cache-Control':'no-cache'})
-    # A persistent global opener can retain an obsolete Windows proxy setup.
-    opener=opener or urllib.request.build_opener().open
-    with opener(request,timeout=10) as response:
-        raw=response.read(2*1024*1024+1)
-        if len(raw)>2*1024*1024:raise ValueError('重置消息响应过大')
-        return normalize_feed(json.loads(raw.decode('utf-8')))
+    # urllib's global opener retains the proxy configuration from its first
+    # request. A long-running companion must follow subsequent Windows changes.
+    opener=opener or urllib.request.build_opener().open;started=time.monotonic()
+    for attempt in range(2):
+        remaining=10-(time.monotonic()-started)
+        if remaining<=0:raise ResetFetchError('timeout','公告连接超时，保留上次记录')
+        try:
+            with opener(request,timeout=min(8,remaining)) as response:
+                raw=response.read(2*1024*1024+1)
+            if len(raw)>2*1024*1024:raise ResetFetchError('response_size','公告响应过大，保留上次记录')
+            try:return normalize_feed(json.loads(raw.decode('utf-8-sig')))
+            except (ValueError,UnicodeError) as error:raise ResetFetchError('schema','公告格式变化，保留上次记录') from error
+        except urllib.error.HTTPError as error:
+            code='http_'+str(error.code);message=f'公告服务 HTTP {error.code}，稍后重试'
+            retry=error.code in (408,429,500,502,503,504)
+        except (urllib.error.URLError,TimeoutError,ssl.SSLError,OSError) as error:
+            reason=getattr(error,'reason',error)
+            if isinstance(reason,ssl.SSLCertVerificationError):code='certificate';message='公告证书验证失败，请检查系统时间或网络代理';retry=False
+            elif isinstance(reason,(TimeoutError,)) or 'timed out' in str(reason).lower():code='timeout';message='公告连接超时，保留上次记录';retry=True
+            else:code='network';message='公告网络连接失败，保留上次记录';retry=True
+        if not retry or attempt==1:raise ResetFetchError(code,message)
+        time.sleep(.1)
 
 class ResetTracker:
     def __init__(self,path):
         self.path=Path(path)
+        self.state={'initialized':False,'seen':[],'schedules':[]}
+        self.read_blocked=not self.load()
+
+    def load(self):
         try:
             state=json.loads(self.path.read_text(encoding='utf-8'))
-            if not isinstance(state,dict) or not isinstance(state.get('seen'),list):raise ValueError()
+            if not isinstance(state,dict) or any(
+                not isinstance(state.get(key,[]),list) or
+                any(not isinstance(value,str) for value in state.get(key,[]))
+                for key in ('seen','schedules','resolved')
+            ):raise ValueError()
             self.state=state
-        except (OSError,ValueError):self.state={'initialized':False,'seen':[],'schedules':[]}
+        except FileNotFoundError:return True
+        except (OSError,ValueError,RecursionError):return False
+        return True
 
     @property
     def snapshot(self):return self.state.get('snapshot')
 
     def update(self,feed,now=None):
+        if self.read_blocked:self.read_blocked=not self.load()
         now=time.time() if now is None else now
         seen=set(self.state.get('seen',[]))
         schedules=set(self.state.get('schedules',[]))
@@ -147,9 +182,13 @@ class ResetTracker:
         if self.state.get('initialized') and pending and schedule_key(pending) not in schedules:
             alerts.append({'kind':'scheduled','title':'Codex 有新的重置安排','text':schedule_text(snapshot,now)})
         state={'initialized':True,'seen':ordered,'schedules':schedule_ids,'resolved':resolved,'snapshot':snapshot}
-        self.path.parent.mkdir(parents=True,exist_ok=True)
-        temp=self.path.with_suffix('.tmp')
-        temp.write_text(json.dumps(state,ensure_ascii=False,indent=2),encoding='utf-8')
-        temp.replace(self.path)
+        from desktop_core import atomic_json
+        if self.read_blocked:
+            self.state=state
+            raise ResetCacheError(snapshot,[])
+        try:atomic_json(self.path,state)
+        except OSError:
+            self.state=state
+            raise ResetCacheError(snapshot,alerts) from None
         self.state=state
         return snapshot,alerts

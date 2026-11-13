@@ -8,6 +8,43 @@ def session_id(value):
     return match.group(1).lower() if match else text
 
 
+def rollout_alias(path):
+    """Map an edited root-turn rollout back to its desktop conversation."""
+    path=Path(path)
+    uuid=r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}'
+    match=re.search(rf'({uuid})_({uuid})\.jsonl$',Path(path).name)
+    if not match or match.group(1).lower()==match.group(2).lower():return path.stem
+    parent,branch=(value.lower() for value in match.groups())
+    inherited_parent=False
+    try:
+        with path.open('rb') as stream:
+            size=0
+            for _ in range(64):
+                raw=stream.readline(65536);size+=len(raw)
+                if not raw or not raw.endswith(b'\n') or size>1048576:break
+                try:obj=json.loads(raw)
+                except (ValueError,UnicodeError):continue
+                payload=obj.get('payload') or {}
+                if not isinstance(payload,dict):continue
+                if obj.get('type')=='session_meta':
+                    owner=session_id(payload.get('id') or payload.get('session_id') or '')
+                    if owner==branch or is_subagent_metadata(payload):return path.stem
+                    if owner==parent:
+                        base=payload.get('history_base')
+                        if isinstance(base,dict) and session_id(base.get('thread_id',''))==parent:
+                            return parent
+                        inherited_parent=True
+                if obj.get('type')=='event_msg' and payload.get('type')=='task_started':
+                    attribution=payload.get('turn_attribution') or {}
+                    if not isinstance(attribution,dict):return path.stem
+                    root_trigger=attribution.get('turn_trigger') in ('edit_user_message','composer','resume_interrupted_task')
+                    if inherited_parent and root_trigger and not attribution.get('initiating_agent_path') and not attribution.get('parent_turn_id'):
+                        return parent
+                    return path.stem
+    except OSError:pass
+    return path.stem
+
+
 def is_subagent_metadata(metadata):
     source=metadata.get('source')
     if isinstance(source,str):
@@ -131,4 +168,16 @@ def active_conversations(home):
         excluded=subagent_sessions(home,[sid for sid,turn in active])
         eligible={sid:title for sid,title in eligible.items() if sid not in excluded}
         return [dict(kind='status',session=sid,turn=turn,state='working',title=eligible[sid],text='任务正在进行',active=len([x for x,t in active if x in eligible]),historical_snapshot=True) for sid,turn in active if sid in eligible]
+    except (OSError,sqlite3.Error,ValueError):return []
+
+
+def terminal_conversations(home,pairs):
+    """Bounded exact-turn repair for a missed log/IPC terminal, read-only."""
+    pairs=list(dict.fromkeys((session_id(s),str(t)) for s,t in pairs if s and t))[:128]
+    if not pairs:return []
+    try:
+        with closing(sqlite3.connect((Path(home)/'thread_history_1.sqlite').as_uri()+'?mode=ro',uri=True,timeout=.1)) as db:
+            slots=','.join('(?,?)' for _ in pairs)
+            rows=db.execute("WITH wanted(thread_id,turn_id) AS (VALUES "+slots+") SELECT a.thread_id,a.turn_id,a.status FROM thread_turns a JOIN wanted p ON a.thread_id=p.thread_id AND a.turn_id=p.turn_id WHERE a.rollout_ordinal=(SELECT MAX(b.rollout_ordinal) FROM thread_turns b WHERE b.thread_id=a.thread_id AND b.turn_id=a.turn_id) AND a.status IN ('completed','failed','interrupted')",[v for pair in pairs for v in pair])
+            return list(rows)
     except (OSError,sqlite3.Error,ValueError):return []

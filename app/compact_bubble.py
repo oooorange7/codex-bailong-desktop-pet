@@ -347,12 +347,13 @@ class Announcement(QWidget):
     refresh_requested=Signal()
     def __init__(self,snapshot,error,busy=False,parent=None,with_refresh=True,dense=False):
         super().__init__(parent);self.snapshot=snapshot;self.error=error;self.setFixedHeight(CARD_HEIGHT)
-        self.setToolTip(schedule_text(snapshot)+'\n'+str((pending_reset(snapshot) or {}).get('text') or '')+'\n北京时间 · 来源：Codex Resets（第三方）\n'+('更新失败，保留上次记录。' if error else '预计安排不等于账户额度已经到账。'))
+        self.setToolTip(schedule_text(snapshot)+'\n'+str((pending_reset(snapshot) or {}).get('text') or '')+'\n北京时间 · 来源：Codex Resets（第三方）\n'+('最新公告已获取，缓存保存失败。' if isinstance(error,dict) and error.get('code')=='cache_write' else '更新失败，保留上次记录。' if error else '预计安排不等于账户额度已经到账。'))
         layout=QVBoxLayout(self);layout.setContentsMargins(3 if dense else 7,0 if dense else 2,2,0 if dense else 1);layout.setSpacing(0 if dense else 1)
         item=pending_reset(snapshot);stamp=epoch((item or {}).get('scheduled'))
         title='备用重置' if (item or {}).get('reset_type')=='banked' else '额外重置'
         title_row=QHBoxLayout();title_row.setContentsMargins(0,0,0,0);title_row.setSpacing(2)
-        label=QLabel(title+(' · 旧记录' if error and snapshot else ' · 失败' if error else ''));label.setStyleSheet(FONT_CSS+'font-size:11px;color:#706879;');title_row.addWidget(label,1)
+        cache_warning=isinstance(error,dict) and error.get('code')=='cache_write'
+        label=QLabel(title+(' · 缓存失败' if cache_warning else ' · 旧记录' if error and snapshot else ' · 失败' if error else ''));label.setStyleSheet(FONT_CSS+'font-size:11px;color:#706879;');title_row.addWidget(label,1)
         self.refresh_button=None
         if with_refresh:
             self.refresh_button=action_button('refresh','刷新重置公告',parent=self);self.refresh_button.setObjectName('reset_refresh')
@@ -363,12 +364,12 @@ class Announcement(QWidget):
         elif not item:main='暂无待落实安排';note='有新消息会提醒'
         elif stamp is None:main='时间待定';note='已有重置安排'
         else:main=local_time(stamp);note='已过 · 待确认' if stamp<=time.time() else '预计最晚 · 北京时间'
-        if error:note=error.get('message','更新失败') if isinstance(error,dict) else '更新失败 · 保留缓存'
+        if error:note='公告已更新 · 缓存失败' if cache_warning else error.get('message','更新失败') if isinstance(error,dict) else '更新失败 · 保留缓存'
         label=QLabel(main);label.setStyleSheet(FONT_CSS+'font-size:12px;color:#514360;');layout.addWidget(label)
         label=QLabel(note);label.setStyleSheet(FONT_CSS+'font-size:11px;color:#706879;');layout.addWidget(label)
         if dense and error:
             checked=epoch((snapshot or {}).get('checked'))
-            last=QLabel('上次 '+local_time(checked) if checked else '尚无成功更新')
+            last=QLabel(('本次 ' if cache_warning else '上次 ')+local_time(checked) if checked else '尚无成功更新')
             last.setStyleSheet(FONT_CSS+'font-size:9px;color:#706879;');layout.addWidget(last)
         if item and item.get('text') and not dense:
             summary=Summary(item['text'],99);summary.setCursor(Qt.CursorShape.ArrowCursor);layout.addWidget(summary)
